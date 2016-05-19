@@ -1,17 +1,27 @@
 Variables:
 
-* interpreter_lock
+* pending_lock
+* _PyThreadState_Current
 
 Functions:
 
-* PyEval_ThreadsInitialized
-* PyEval_InitThreads
-* PyEval_AcquireLock
-* PyEval_ReleaseLock
-* PyEval_AcquireThread
-* PyEval_ReleaseThread
-* PyEval_ReInitThreads
 * PyEval_SaveThread
 * PyEval_RestoreThread
 * PyEval_EvalFrameEx
 * PyThread_ReInitTLS
+* Py_AddPendingCall
+* Py_MakePendingCalls
+* PyThreadState_DeleteCurrent
+
+Terms to search:
+
+* GIL
+
+Functions for later:
+
+* PyEval_ReInitThreads
+
+Known problems and solutions:
+* Memory management with reference counters - use fetch and add.
+* Current thread global variable - use thread local variable.
+* Memory management of cycle detection - ???.

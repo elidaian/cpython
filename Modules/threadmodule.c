@@ -615,8 +615,7 @@ t_bootstrap(void *boot_raw)
     tstate = boot->tstate;
     tstate->thread_id = PyThread_get_thread_ident();
     _PyThreadState_Init(tstate);
-    PyEval_AcquireThread(tstate);
-    nb_threads++;
+    __sync_fetch_and_add(nb_threads, 1);
     res = PyEval_CallObjectWithKeywords(
         boot->func, boot->args, boot->keyw);
     if (res == NULL) {
@@ -644,7 +643,7 @@ t_bootstrap(void *boot_raw)
     Py_DECREF(boot->args);
     Py_XDECREF(boot->keyw);
     PyMem_DEL(boot_raw);
-    nb_threads--;
+    __sync_fetch_and_sub(nb_threads, 1);
     PyThreadState_Clear(tstate);
     PyThreadState_DeleteCurrent();
     PyThread_exit_thread();
