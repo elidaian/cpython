@@ -1,0 +1,17 @@
+Variables:
+
+* interpreter_lock
+
+Functions:
+
+* PyEval_ThreadsInitialized
+* PyEval_InitThreads
+* PyEval_AcquireLock
+* PyEval_ReleaseLock
+* PyEval_AcquireThread
+* PyEval_ReleaseThread
+* PyEval_ReInitThreads
+* PyEval_SaveThread
+* PyEval_RestoreThread
+* PyEval_EvalFrameEx
+* PyThread_ReInitTLS
