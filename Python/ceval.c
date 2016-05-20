@@ -261,7 +261,7 @@ PyEval_ReInitThreads(void)
     PyObject *threading, *result;
     PyThreadState *tstate;
 
-    /* forking is not supported now */
+    /* forking is not supported yet */
     return;
 
 #if 0
@@ -296,39 +296,6 @@ PyEval_ReInitThreads(void)
 #endif
 }
 #endif
-
-/* Functions save_thread and restore_thread are always defined so
-   dynamically loaded modules needn't be compiled separately for use
-   with and without threads: */
-
-PyThreadState *
-PyEval_SaveThread(void)
-{
-    PyThreadState *tstate = PyThreadState_Swap(NULL);
-    if (tstate == NULL)
-        Py_FatalError("PyEval_SaveThread: NULL tstate");
-#ifdef WITH_THREAD
-    if (interpreter_lock)
-        PyThread_release_lock(interpreter_lock);
-#endif
-    return tstate;
-}
-
-void
-PyEval_RestoreThread(PyThreadState *tstate)
-{
-    if (tstate == NULL)
-        Py_FatalError("PyEval_RestoreThread: NULL tstate");
-#ifdef WITH_THREAD
-    if (interpreter_lock) {
-        int err = errno;
-        PyThread_acquire_lock(interpreter_lock, 1);
-        errno = err;
-    }
-#endif
-    PyThreadState_Swap(tstate);
-}
-
 
 /* Mechanism whereby asynchronously executing callbacks (e.g. UNIX
    signal handlers or Mac I/O completion routines) can schedule calls
@@ -1072,33 +1039,6 @@ PyEval_EvalFrameEx(PyFrameObject *f, int throwflag)
                        a thread switch */
                     _Py_Ticker = 0;
             }
-#ifdef WITH_THREAD
-            if (interpreter_lock) {
-                /* Give another thread a chance */
-
-                if (PyThreadState_Swap(NULL) != tstate)
-                    Py_FatalError("ceval: tstate mix-up");
-                PyThread_release_lock(interpreter_lock);
-
-                /* Other threads may run now */
-
-                PyThread_acquire_lock(interpreter_lock, 1);
-
-                if (PyThreadState_Swap(tstate) != NULL)
-                    Py_FatalError("ceval: orphan tstate");
-
-                /* Check for thread interrupts */
-
-                if (tstate->async_exc != NULL) {
-                    x = tstate->async_exc;
-                    tstate->async_exc = NULL;
-                    PyErr_SetNone(x);
-                    Py_DECREF(x);
-                    why = WHY_EXCEPTION;
-                    goto on_error;
-                }
-            }
-#endif
         }
 
     fast_next_opcode:

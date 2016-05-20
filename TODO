@@ -2,13 +2,11 @@ Variables:
 
 * pending_lock
 * _PyThreadState_Current
+* _Py_Ticker
+* _Py_CheckInterval
 
 Functions:
 
-* PyEval_SaveThread
-* PyEval_RestoreThread
-* PyEval_EvalFrameEx
-* PyThread_ReInitTLS
 * Py_AddPendingCall
 * Py_MakePendingCalls
 * PyThreadState_DeleteCurrent
@@ -16,6 +14,11 @@ Functions:
 Terms to search:
 
 * GIL
+
+Files:
+
+* pystate.c
+* import.c - import lock
 
 Functions for later:
 
@@ -25,3 +28,5 @@ Known problems and solutions:
 * Memory management with reference counters - use fetch and add.
 * Current thread global variable - use thread local variable.
 * Memory management of cycle detection - ???.
+* Get rid of _Py_Ticker & _Py_CheckInterval - they are not needed anymore.
+
