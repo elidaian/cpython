@@ -766,12 +766,12 @@ PyAPI_FUNC(void) _Py_AddToAllObjects(PyObject *, int force);
 
 #define Py_INCREF(op) (                         \
     _Py_INC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-    ((PyObject*)(op))->ob_refcnt++)
+    __sync_fetch_and_add(((PyObject*)(op))->ob_refcnt, 1))
 
 #define Py_DECREF(op)                                   \
     do {                                                \
         if (_Py_DEC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-        --((PyObject*)(op))->ob_refcnt != 0)            \
+        __sync_sub_and_fetch(((PyObject*)(op))->ob_refcnt, 1) != 0) \
             _Py_CHECK_REFCNT(op)                        \
         else                                            \
         _Py_Dealloc((PyObject *)(op));                  \
