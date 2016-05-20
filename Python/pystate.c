@@ -26,6 +26,8 @@ the expense of doing their own locking).
 extern "C" {
 #endif
 
+#define WITH_THREAD 1
+
 #ifdef WITH_THREAD
 #include "pythread.h"
 static PyThread_type_lock head_mutex = NULL; /* Protects interp->tstate_head */
@@ -36,18 +38,18 @@ static PyThread_type_lock head_mutex = NULL; /* Protects interp->tstate_head */
 /* The single PyInterpreterState used by this process'
    GILState implementation
 */
-static PyInterpreterState *autoInterpreterState = NULL;
-static int autoTLSkey = 0;
+static __thread PyInterpreterState *autoInterpreterState = NULL;
+static __thread int autoTLSkey = 0;
 #else
 #define HEAD_INIT() /* Nothing */
 #define HEAD_LOCK() /* Nothing */
 #define HEAD_UNLOCK() /* Nothing */
 #endif
 
-static PyInterpreterState *interp_head = NULL;
+static __thread PyInterpreterState *interp_head = NULL;
 
-PyThreadState *_PyThreadState_Current = NULL;
-PyThreadFrameGetter _PyThreadState_GetFrame = NULL;
+__thread PyThreadState *_PyThreadState_Current = NULL;
+const PyThreadFrameGetter _PyThreadState_GetFrame = threadstate_getframe;
 
 #ifdef WITH_THREAD
 static void _PyGILState_NoteThreadState(PyThreadState* tstate);
@@ -85,10 +87,8 @@ PyInterpreterState_New(void)
         interp->tscdump = 0;
 #endif
 
-        HEAD_LOCK();
         interp->next = interp_head;
         interp_head = interp;
-        HEAD_UNLOCK();
     }
 
     return interp;
@@ -99,10 +99,8 @@ void
 PyInterpreterState_Clear(PyInterpreterState *interp)
 {
     PyThreadState *p;
-    HEAD_LOCK();
     for (p = interp->tstate_head; p != NULL; p = p->next)
         PyThreadState_Clear(p);
-    HEAD_UNLOCK();
     Py_CLEAR(interp->codec_search_path);
     Py_CLEAR(interp->codec_search_cache);
     Py_CLEAR(interp->codec_error_registry);
@@ -130,7 +128,6 @@ PyInterpreterState_Delete(PyInterpreterState *interp)
 {
     PyInterpreterState **p;
     zapthreads(interp);
-    HEAD_LOCK();
     for (p = &interp_head; ; p = &(*p)->next) {
         if (*p == NULL)
             Py_FatalError(
@@ -141,7 +138,6 @@ PyInterpreterState_Delete(PyInterpreterState *interp)
     if (interp->tstate_head != NULL)
         Py_FatalError("PyInterpreterState_Delete: remaining threads");
     *p = interp->next;
-    HEAD_UNLOCK();
     free(interp);
 }
 
@@ -157,9 +153,6 @@ static PyThreadState *
 new_threadstate(PyInterpreterState *interp, int init)
 {
     PyThreadState *tstate = (PyThreadState *)malloc(sizeof(PyThreadState));
-
-    if (_PyThreadState_GetFrame == NULL)
-        _PyThreadState_GetFrame = threadstate_getframe;
 
     if (tstate != NULL) {
         tstate->interp = interp;
@@ -198,10 +191,8 @@ new_threadstate(PyInterpreterState *interp, int init)
         if (init)
             _PyThreadState_Init(tstate);
 
-        HEAD_LOCK();
         tstate->next = interp->tstate_head;
         interp->tstate_head = tstate;
-        HEAD_UNLOCK();
     }
 
     return tstate;
@@ -266,7 +257,6 @@ tstate_delete_common(PyThreadState *tstate)
     interp = tstate->interp;
     if (interp == NULL)
         Py_FatalError("PyThreadState_Delete: NULL interp");
-    HEAD_LOCK();
     for (p = &interp->tstate_head; ; p = &(*p)->next) {
         if (*p == NULL)
             Py_FatalError(
@@ -288,7 +278,6 @@ tstate_delete_common(PyThreadState *tstate)
                 " tstate not found.");
     }
     *p = tstate->next;
-    HEAD_UNLOCK();
     free(tstate);
 }
 
@@ -399,7 +388,6 @@ PyThreadState_SetAsyncExc(long id, PyObject *exc) {
      * list of thread states we're traversing, so to prevent that we lock
      * head_mutex for the duration.
      */
-    HEAD_LOCK();
     for (p = interp->tstate_head; p != NULL; p = p->next) {
         if (p->thread_id == id) {
             /* Tricky:  we need to decref the current value
@@ -412,12 +400,10 @@ PyThreadState_SetAsyncExc(long id, PyObject *exc) {
             PyObject *old_exc = p->async_exc;
             Py_XINCREF(exc);
             p->async_exc = exc;
-            HEAD_UNLOCK();
             Py_XDECREF(old_exc);
             return 1;
         }
     }
-    HEAD_UNLOCK();
     return 0;
 }
 
@@ -467,7 +453,6 @@ _PyThread_CurrentFrames(void)
      * Because these lists can mutate even when the GIL is held, we
      * need to grab head_mutex for the duration.
      */
-    HEAD_LOCK();
     for (i = interp_head; i != NULL; i = i->next) {
         PyThreadState *t;
         for (t = i->tstate_head; t != NULL; t = t->next) {
@@ -485,11 +470,9 @@ _PyThread_CurrentFrames(void)
                 goto Fail;
         }
     }
-    HEAD_UNLOCK();
     return result;
 
  Fail:
-    HEAD_UNLOCK();
     Py_DECREF(result);
     return NULL;
 }
