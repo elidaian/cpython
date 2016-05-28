@@ -2510,7 +2510,7 @@ _PyTrash_thread_destroy_chain(void)
     }
 }
 
-void Py_INCREF(void* op) {
+void __attribute__ ((noinline)) Py_INCREF(void* op) {
     PyObject* pyObj = (PyObject*)op;
 
     if (_xbegin() == _XBEGIN_STARTED) {
@@ -2523,7 +2523,7 @@ void Py_INCREF(void* op) {
     }
 }
 
-void Py_DECREF(void* op) {
+void __attribute__ ((noinline)) Py_DECREF(void* op) {
     PyObject* pyObj = (PyObject*)op;
     Py_ssize_t new_refcnt;
 
