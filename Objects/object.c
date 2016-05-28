@@ -1,6 +1,8 @@
 
 /* Generic object operations; and implementation of None (NoObject) */
 
+#include <immintrin.h>
+
 #include "Python.h"
 #include "frameobject.h"
 
@@ -2511,15 +2513,30 @@ _PyTrash_thread_destroy_chain(void)
 void Py_INCREF(void* op) {
     PyObject* pyObj = (PyObject*)op;
 
-    _Py_INC_REFTOTAL;
-    pyObj->ob_refcnt++;
+    if (_xbegin() == _XBEGIN_STARTED) {
+        _Py_INC_REFTOTAL;
+        pyObj->ob_refcnt++;
+        _xend();
+    } else {
+        _Py_INC_REFTOTAL;
+        __atomic_fetch_add(&pyObj->ob_refcnt, 1, __ATOMIC_RELAXED);
+    }
 }
 
 void Py_DECREF(void* op) {
     PyObject* pyObj = (PyObject*)op;
+    Py_ssize_t new_refcnt;
 
-    _Py_DEC_REFTOTAL;
-    if (--pyObj->ob_refcnt != 0) {
+    if (_xbegin() == _XBEGIN_STARTED) {
+        _Py_DEC_REFTOTAL;
+        new_refcnt = --pyObj->ob_refcnt;
+        _xend();
+    } else {
+        _Py_DEC_REFTOTAL;
+        new_refcnt = __atomic_fetch_sub(&pyObj->ob_refcnt, 1, __ATOMIC_RELAXED);
+    }
+
+    if (new_refcnt != 0) {
         _Py_CHECK_REFCNT(op);
     } else {
         _Py_Dealloc(op);
