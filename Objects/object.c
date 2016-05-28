@@ -2508,6 +2508,24 @@ _PyTrash_thread_destroy_chain(void)
     }
 }
 
+void Py_INCREF(void* op) {
+    PyObject* pyObj = (PyObject*)op;
+
+    _Py_INC_REFTOTAL;
+    pyObj->ob_refcnt++;
+}
+
+void Py_DECREF(void* op) {
+    PyObject* pyObj = (PyObject*)op;
+
+    _Py_DEC_REFTOTAL;
+    if (--pyObj->ob_refcnt != 0) {
+        _Py_CHECK_REFCNT(op);
+    } else {
+        _Py_Dealloc(op);
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif
