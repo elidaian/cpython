@@ -764,23 +764,23 @@ PyAPI_FUNC(void) _Py_AddToAllObjects(PyObject *, int force);
     (*Py_TYPE(op)->tp_dealloc)((PyObject *)(op)))
 #endif /* !Py_TRACE_REFS */
 
-inline Py_ssize_t fetch_and_add(Py_ssize_t *pos, Py_ssize_t num) {
-    asm volatile("lock; xaddl %%eax, %2;"
-                 :"=a" (num)                 /* output */
-                 :"a" (num), "m" (*pos)      /* input */
-                 /*:"memory"*/);
-    return num;
-}
+// inline Py_ssize_t fetch_and_add(Py_ssize_t *pos, Py_ssize_t num) {
+//     asm volatile("lock; xaddl %%eax, %2;"
+//                  :"=a" (num)                 /* output */
+//                  :"a" (num), "m" (*pos)      /* input */
+//                  /*:"memory"*/);
+//     return num;
+// }
 
 #define Py_INCREF(op) (                         \
     _Py_INC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-    (fetch_and_add(&(((PyObject*)(op))->ob_refcnt), 1)))
+    (__atomic_fetch_add(&(((PyObject*)(op))->ob_refcnt), 1, __ATOMIC_RELAXED)))
     /* ((PyObject*)(op))->ob_refcnt++) */
 
 #define Py_DECREF(op)                                   \
     do {                                                \
         if (_Py_DEC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-        fetch_and_add(&(((PyObject*)(op))->ob_refcnt), -1) != 1) \
+        __atomic_fetch_add(&(((PyObject*)(op))->ob_refcnt), -1, __ATOMIC_RELAXED) != 1) \
         /* --((PyObject*)(op))->ob_refcnt != 0) */            \
             _Py_CHECK_REFCNT(op)                        \
         else                                            \
