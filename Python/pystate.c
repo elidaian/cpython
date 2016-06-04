@@ -30,7 +30,7 @@ extern "C" {
 /* The single PyInterpreterState used by this process'
    GILState implementation
 */
-static __thread PyInterpreterState *autoInterpreterState = NULL;
+static PyInterpreterState *autoInterpreterState = NULL;
 static __thread int autoTLSkey = 0;
 #else
 #endif
