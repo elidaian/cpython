@@ -38,7 +38,7 @@ static __thread int autoTLSkey = 0;
 static __thread PyInterpreterState *interp_head = NULL;
 
 __thread PyThreadState *_PyThreadState_Current = NULL;
-__thread PyThreadFrameGetter _PyThreadState_GetFrame = NULL;
+PyThreadFrameGetter _PyThreadState_GetFrame = NULL;
 
 #ifdef WITH_THREAD
 static void _PyGILState_NoteThreadState(PyThreadState* tstate);
