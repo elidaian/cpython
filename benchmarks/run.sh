@@ -17,3 +17,9 @@ $GLOBAL_PYTHON $DIR/pi.py
 echo "Running pi.py on changed Python version"
 $MY_PYTHON $DIR/pi.py
 
+echo "Running pystone.py on regular Python version"
+$GLOBAL_PYTHON $DIR/pystone.py
+
+echo "Running pystone.py on changed Python version"
+$MY_PYTHON $DIR/pystone.py
+
