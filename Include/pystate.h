@@ -124,7 +124,7 @@ PyAPI_FUNC(int) PyThreadState_SetAsyncExc(long, PyObject *);
 
 /* Variable and macro for in-line access to current thread state */
 
-PyAPI_DATA(PyThreadState *) _PyThreadState_Current;
+PyAPI_DATA(__thread PyThreadState *) _PyThreadState_Current;
 
 #ifdef Py_DEBUG
 #define PyThreadState_GET() PyThreadState_Get()
@@ -192,7 +192,7 @@ PyAPI_FUNC(PyThreadState *) PyThreadState_Next(PyThreadState *);
 typedef struct _frame *(*PyThreadFrameGetter)(PyThreadState *self_);
 
 /* hook for PyEval_GetFrame(), requested for Psyco */
-PyAPI_DATA(PyThreadFrameGetter) _PyThreadState_GetFrame;
+PyAPI_DATA(__thread PyThreadFrameGetter) _PyThreadState_GetFrame;
 
 #ifdef __cplusplus
 }
