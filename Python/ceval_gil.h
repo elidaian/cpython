@@ -127,25 +127,16 @@ static MUTEX_T switch_mutex;
 #endif
 
 
+static int _gil_created = 0;
+
 static int gil_created(void)
 {
-    return 1; // _Py_atomic_load_explicit(&gil_locked, _Py_memory_order_acquire) >= 0;
+    return _gil_created;
 }
 
 static void create_gil(void)
 {
-    return;
-    MUTEX_INIT(gil_mutex);
-#ifdef FORCE_SWITCHING
-    MUTEX_INIT(switch_mutex);
-#endif
-    COND_INIT(gil_cond);
-#ifdef FORCE_SWITCHING
-    COND_INIT(switch_cond);
-#endif
-    _Py_atomic_store_relaxed(&gil_last_holder, 0);
-    _Py_ANNOTATE_RWLOCK_CREATE(&gil_locked);
-    _Py_atomic_store_explicit(&gil_locked, 0, _Py_memory_order_release);
+    _gil_created = 1;
 }
 
 static void destroy_gil(void)

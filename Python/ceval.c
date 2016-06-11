@@ -308,13 +308,7 @@ PyEval_ThreadsInitialized(void)
 void
 PyEval_InitThreads(void)
 {
-    if (gil_created())
-        return;
     create_gil();
-    take_gil(PyThreadState_GET());
-    main_thread = PyThread_get_thread_ident();
-    if (!pending_lock)
-        pending_lock = PyThread_allocate_lock();
 }
 
 void
