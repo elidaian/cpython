@@ -16,8 +16,8 @@
 typedef pthread_t threadid_t;
 #define CURRENT_THREAD_ID pthread_self()
 #define ARE_THREADS_EQUAL(x, y) (pthread_equal((x), (y)))
-#define ATOMIC_PRE_ADD_SSIZE_T(x, y)  __sync_add_and_fetch((x), (y))
-#define ATOMIC_PRE_SUB_SSIZE_T(x, y)  __sync_sub_and_fetch((x), (y))
+#define ATOMIC_PRE_ADD_SSIZE_T(x, y)  __atomic_add_fetch((x), (y), __ATOMIC_RELAXED)
+#define ATOMIC_PRE_SUB_SSIZE_T(x, y)  __atomic_sub_fetch((x), (y), __ATOMIC_RELAXED)
 
 
 Py_LOCAL_INLINE(int) syscall_futex(int *futex, int operation, int value) {

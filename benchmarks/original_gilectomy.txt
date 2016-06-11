@@ -1,0 +1,8 @@
+Running counter.py on regular Python version
+one_simple_call took 4.62 seconds
+Running counter.py on changed Python version
+one_simple_call took 14.44 seconds
+Running pi.py on regular Python version
+one_simple_call took 8.48 seconds
+Running pi.py on changed Python version
+one_simple_call took 19.90 seconds
