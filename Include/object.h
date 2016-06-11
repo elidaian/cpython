@@ -814,13 +814,17 @@ void __py_decref__(PyObject *o);
 
 #define Py_INCREF(op) (                         \
     _Py_INC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-    ATOMIC_INC(&(((PyObject *)(op))->ob_refcnt.shared_refcnt)) )
+    PyEval_ThreadsInitialized() ?               \
+        ATOMIC_INC(&(((PyObject *)(op))->ob_refcnt.shared_refcnt)) \
+        : ++((PyObject *)(op))->ob_refcnt.shared_refcnt )
 
 #define Py_DECREF(op)                                   \
     do {                                                \
         PyObject *_py_decref_tmp = (PyObject *)(op);    \
         if (_Py_DEC_REFTOTAL  _Py_REF_DEBUG_COMMA       \
-        ATOMIC_DEC(&(_py_decref_tmp->ob_refcnt.shared_refcnt)) != 0)  \
+        (PyEval_ThreadsInitialized() ?                   \
+            ATOMIC_DEC(&(_py_decref_tmp->ob_refcnt.shared_refcnt))  \
+            : --(_py_decref_tmp)->ob_refcnt.shared_refcnt ) != 0)\
             _Py_CHECK_REFCNT(_py_decref_tmp)            \
         else                                            \
             _Py_Dealloc(_py_decref_tmp);                \
