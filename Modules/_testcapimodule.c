@@ -2742,9 +2742,9 @@ slot_tp_del(PyObject *self)
      * never happened.
      */
     {
-        ob_refcnt_t refcnt = Py_REFCNT(self);
+        ob_refcnt_t refcnt = self->ob_refcnt;
         _Py_NewReference(self);
-        Py_REFCNT_Initialize(self, refcnt);
+        Py_REFCNT_Initialize(self, refcnt.shared_refcnt);
     }
     assert(!PyType_IS_GC(Py_TYPE(self)) ||
            _Py_AS_GC(self)->gc.gc_refs != _PyGC_REFS_UNTRACKED);
