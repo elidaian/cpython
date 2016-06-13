@@ -1195,222 +1195,227 @@ int Py_ADDRESS_IN_RANGE(void *P, poolp pool) Py_NO_INLINE;
 static void *
 _PyObject_Alloc(int use_calloc, void *ctx, size_t nelem, size_t elsize)
 {
-    size_t nbytes;
-    block *bp;
-    poolp pool;
-    poolp next;
-    uint size;
-    uint class;
-
-    ATOMIC_INC(&_Py_AllocatedBlocks);
-
-    assert(nelem <= PY_SSIZE_T_MAX / elsize);
-    nbytes = nelem * elsize;
-
-#ifdef WITH_VALGRIND
-    if (UNLIKELY(running_on_valgrind == -1))
-        running_on_valgrind = RUNNING_ON_VALGRIND;
-    if (UNLIKELY(running_on_valgrind))
-        goto redirect;
-#endif
-
-    if (nelem == 0 || elsize == 0)
-        goto redirect;
-
-    if ((nbytes - 1) < SMALL_REQUEST_THRESHOLD) {
-        class = (uint)(nbytes - 1) >> ALIGNMENT_SHIFT;
-        LOCK(class);
-        /*
-         * Most frequent paths first
-         */
-        pool = usedpools[class + class];
-        if (pool != pool->nextpool) {
-            /*
-             * There is a used pool for this size class.
-             * Pick up the head block of its free list.
-             */
-            ++pool->ref.count;
-            bp = pool->freeblock;
-            assert(bp != NULL);
-            if ((pool->freeblock = *(block **)bp) != NULL) {
-                UNLOCK(class);
-                if (use_calloc)
-                    memset(bp, 0, nbytes);
-                return (void *)bp;
-            }
-            /*
-             * Reached the end of the free list, try to extend it.
-             */
-            if (pool->nextoffset <= pool->maxnextoffset) {
-                /* There is room for another block. */
-                pool->freeblock = (block*)pool +
-                                  pool->nextoffset;
-                pool->nextoffset += INDEX2SIZE(class);
-                *(block **)(pool->freeblock) = NULL;
-                UNLOCK(class);
-                if (use_calloc)
-                    memset(bp, 0, nbytes);
-                return (void *)bp;
-            }
-            /* Pool is full, unlink from used pools. */
-            next = pool->nextpool;
-            pool = pool->prevpool;
-            next->prevpool = pool;
-            pool->nextpool = next;
-            UNLOCK(class);
-            if (use_calloc)
-                memset(bp, 0, nbytes);
-            return (void *)bp;
-        }
-
-        /* There isn't a pool of the right size class immediately
-         * available:  use a free pool.
-         */
-        arena_lock();
-        if (usable_arenas == NULL) {
-            /* No arena has a free pool:  allocate a new arena. */
-#ifdef WITH_MEMORY_LIMITS
-            if (narenas_currently_allocated >= MAX_ARENAS) {
-                arena_unlock();
-                UNLOCK(class);
-                goto redirect;
-            }
-#endif
-            usable_arenas = new_arena();
-            if (usable_arenas == NULL) {
-                arena_unlock();
-                UNLOCK(class);
-                goto redirect;
-            }
-            usable_arenas->nextarena =
-                usable_arenas->prevarena = NULL;
-        }
-        assert(usable_arenas->address != 0);
-
-        /* Try to get a cached free pool. */
-        pool = usable_arenas->freepools;
-        if (pool != NULL) {
-            /* Unlink from cached pools. */
-            usable_arenas->freepools = pool->nextpool;
-
-            /* This arena already had the smallest nfreepools
-             * value, so decreasing nfreepools doesn't change
-             * that, and we don't need to rearrange the
-             * usable_arenas list.  However, if the arena has
-             * become wholly allocated, we need to remove its
-             * arena_object from usable_arenas.
-             */
-            --usable_arenas->nfreepools;
-            if (usable_arenas->nfreepools == 0) {
-                /* Wholly allocated:  remove. */
-                assert(usable_arenas->freepools == NULL);
-                assert(usable_arenas->nextarena == NULL ||
-                       usable_arenas->nextarena->prevarena ==
-                       usable_arenas);
-
-                usable_arenas = usable_arenas->nextarena;
-                if (usable_arenas != NULL) {
-                    usable_arenas->prevarena = NULL;
-                    assert(usable_arenas->address != 0);
-                }
-            }
-            else {
-                /* nfreepools > 0:  it must be that freepools
-                 * isn't NULL, or that we haven't yet carved
-                 * off all the arena's pools for the first
-                 * time.
-                 */
-                assert(usable_arenas->freepools != NULL ||
-                       usable_arenas->pool_address <=
-                       (block*)usable_arenas->address +
-                           ARENA_SIZE - POOL_SIZE);
-            }
-        arena_unlock();
-        init_pool:
-            /* Frontlink to used pools. */
-            next = usedpools[class + class]; /* == prev */
-            pool->nextpool = next;
-            pool->prevpool = next;
-            next->nextpool = pool;
-            next->prevpool = pool;
-            pool->ref.count = 1;
-            if (pool->szidx == class) {
-                /* Luckily, this pool last contained blocks
-                 * of the same size class, so its header
-                 * and free list are already initialized.
-                 */
-                bp = pool->freeblock;
-                assert(bp != NULL);
-                pool->freeblock = *(block **)bp;
-                UNLOCK(class);
-                if (use_calloc)
-                    memset(bp, 0, nbytes);
-                return (void *)bp;
-            }
-            /*
-             * Initialize the pool header, set up the free list to
-             * contain just the second block, and return the first
-             * block.
-             */
-            pool->szidx = class;
-            size = INDEX2SIZE(class);
-            bp = (block *)pool + POOL_OVERHEAD;
-            pool->nextoffset = POOL_OVERHEAD + (size << 1);
-            pool->maxnextoffset = POOL_SIZE - size;
-            pool->freeblock = bp + size;
-            *(block **)(pool->freeblock) = NULL;
-            UNLOCK(class);
-            if (use_calloc)
-                memset(bp, 0, nbytes);
-            return (void *)bp;
-        }
-
-        /* Carve off a new pool. */
-        assert(usable_arenas->nfreepools > 0);
-        assert(usable_arenas->freepools == NULL);
-        pool = (poolp)usable_arenas->pool_address;
-        assert((block*)pool <= (block*)usable_arenas->address +
-                               ARENA_SIZE - POOL_SIZE);
-        pool->arenaindex = (uint)(usable_arenas - arenas);
-        assert(&arenas[pool->arenaindex] == usable_arenas);
-        pool->szidx = DUMMY_SIZE_IDX;
-        usable_arenas->pool_address += POOL_SIZE;
-        --usable_arenas->nfreepools;
-
-        if (usable_arenas->nfreepools == 0) {
-            assert(usable_arenas->nextarena == NULL ||
-                   usable_arenas->nextarena->prevarena ==
-                   usable_arenas);
-            /* Unlink the arena:  it is completely allocated. */
-            usable_arenas = usable_arenas->nextarena;
-            if (usable_arenas != NULL) {
-                usable_arenas->prevarena = NULL;
-                assert(usable_arenas->address != 0);
-            }
-        }
-
-        arena_unlock();
-        goto init_pool;
-    }
-
-    /* The small block allocator ends here. */
-
-redirect:
-    /* Redirect the original request to the underlying (libc) allocator.
-     * We jump here on bigger requests, on error in the code above (as a
-     * last chance to serve the request) or when the max memory limit
-     * has been reached.
-     */
-    {
-        void *result;
-        if (use_calloc)
-            result = PyMem_RawCalloc(nelem, elsize);
-        else
-            result = PyMem_RawMalloc(nbytes);
-        if (!result)
-            ATOMIC_DEC(&_Py_AllocatedBlocks);
-        return result;
-    }
+	if (use_calloc) {
+		return calloc(nelem, elsize);
+	} else {
+		return malloc(nelem * elsize);
+	}
+//     size_t nbytes;
+//     block *bp;
+//     poolp pool;
+//     poolp next;
+//     uint size;
+//     uint class;
+// 
+//     ATOMIC_INC(&_Py_AllocatedBlocks);
+// 
+//     assert(nelem <= PY_SSIZE_T_MAX / elsize);
+//     nbytes = nelem * elsize;
+// 
+// #ifdef WITH_VALGRIND
+//     if (UNLIKELY(running_on_valgrind == -1))
+//         running_on_valgrind = RUNNING_ON_VALGRIND;
+//     if (UNLIKELY(running_on_valgrind))
+//         goto redirect;
+// #endif
+// 
+//     if (nelem == 0 || elsize == 0)
+//         goto redirect;
+// 
+//     if ((nbytes - 1) < SMALL_REQUEST_THRESHOLD) {
+//         class = (uint)(nbytes - 1) >> ALIGNMENT_SHIFT;
+//         LOCK(class);
+//         /*
+//          * Most frequent paths first
+//          */
+//         pool = usedpools[class + class];
+//         if (pool != pool->nextpool) {
+//             /*
+//              * There is a used pool for this size class.
+//              * Pick up the head block of its free list.
+//              */
+//             ++pool->ref.count;
+//             bp = pool->freeblock;
+//             assert(bp != NULL);
+//             if ((pool->freeblock = *(block **)bp) != NULL) {
+//                 UNLOCK(class);
+//                 if (use_calloc)
+//                     memset(bp, 0, nbytes);
+//                 return (void *)bp;
+//             }
+//             /*
+//              * Reached the end of the free list, try to extend it.
+//              */
+//             if (pool->nextoffset <= pool->maxnextoffset) {
+//                 /* There is room for another block. */
+//                 pool->freeblock = (block*)pool +
+//                                   pool->nextoffset;
+//                 pool->nextoffset += INDEX2SIZE(class);
+//                 *(block **)(pool->freeblock) = NULL;
+//                 UNLOCK(class);
+//                 if (use_calloc)
+//                     memset(bp, 0, nbytes);
+//                 return (void *)bp;
+//             }
+//             /* Pool is full, unlink from used pools. */
+//             next = pool->nextpool;
+//             pool = pool->prevpool;
+//             next->prevpool = pool;
+//             pool->nextpool = next;
+//             UNLOCK(class);
+//             if (use_calloc)
+//                 memset(bp, 0, nbytes);
+//             return (void *)bp;
+//         }
+// 
+//         /* There isn't a pool of the right size class immediately
+//          * available:  use a free pool.
+//          */
+//         arena_lock();
+//         if (usable_arenas == NULL) {
+//             /* No arena has a free pool:  allocate a new arena. */
+// #ifdef WITH_MEMORY_LIMITS
+//             if (narenas_currently_allocated >= MAX_ARENAS) {
+//                 arena_unlock();
+//                 UNLOCK(class);
+//                 goto redirect;
+//             }
+// #endif
+//             usable_arenas = new_arena();
+//             if (usable_arenas == NULL) {
+//                 arena_unlock();
+//                 UNLOCK(class);
+//                 goto redirect;
+//             }
+//             usable_arenas->nextarena =
+//                 usable_arenas->prevarena = NULL;
+//         }
+//         assert(usable_arenas->address != 0);
+// 
+//         /* Try to get a cached free pool. */
+//         pool = usable_arenas->freepools;
+//         if (pool != NULL) {
+//             /* Unlink from cached pools. */
+//             usable_arenas->freepools = pool->nextpool;
+// 
+//             /* This arena already had the smallest nfreepools
+//              * value, so decreasing nfreepools doesn't change
+//              * that, and we don't need to rearrange the
+//              * usable_arenas list.  However, if the arena has
+//              * become wholly allocated, we need to remove its
+//              * arena_object from usable_arenas.
+//              */
+//             --usable_arenas->nfreepools;
+//             if (usable_arenas->nfreepools == 0) {
+//                 /* Wholly allocated:  remove. */
+//                 assert(usable_arenas->freepools == NULL);
+//                 assert(usable_arenas->nextarena == NULL ||
+//                        usable_arenas->nextarena->prevarena ==
+//                        usable_arenas);
+// 
+//                 usable_arenas = usable_arenas->nextarena;
+//                 if (usable_arenas != NULL) {
+//                     usable_arenas->prevarena = NULL;
+//                     assert(usable_arenas->address != 0);
+//                 }
+//             }
+//             else {
+//                 /* nfreepools > 0:  it must be that freepools
+//                  * isn't NULL, or that we haven't yet carved
+//                  * off all the arena's pools for the first
+//                  * time.
+//                  */
+//                 assert(usable_arenas->freepools != NULL ||
+//                        usable_arenas->pool_address <=
+//                        (block*)usable_arenas->address +
+//                            ARENA_SIZE - POOL_SIZE);
+//             }
+//         arena_unlock();
+//         init_pool:
+//             /* Frontlink to used pools. */
+//             next = usedpools[class + class]; /* == prev */
+//             pool->nextpool = next;
+//             pool->prevpool = next;
+//             next->nextpool = pool;
+//             next->prevpool = pool;
+//             pool->ref.count = 1;
+//             if (pool->szidx == class) {
+//                 /* Luckily, this pool last contained blocks
+//                  * of the same size class, so its header
+//                  * and free list are already initialized.
+//                  */
+//                 bp = pool->freeblock;
+//                 assert(bp != NULL);
+//                 pool->freeblock = *(block **)bp;
+//                 UNLOCK(class);
+//                 if (use_calloc)
+//                     memset(bp, 0, nbytes);
+//                 return (void *)bp;
+//             }
+//             /*
+//              * Initialize the pool header, set up the free list to
+//              * contain just the second block, and return the first
+//              * block.
+//              */
+//             pool->szidx = class;
+//             size = INDEX2SIZE(class);
+//             bp = (block *)pool + POOL_OVERHEAD;
+//             pool->nextoffset = POOL_OVERHEAD + (size << 1);
+//             pool->maxnextoffset = POOL_SIZE - size;
+//             pool->freeblock = bp + size;
+//             *(block **)(pool->freeblock) = NULL;
+//             UNLOCK(class);
+//             if (use_calloc)
+//                 memset(bp, 0, nbytes);
+//             return (void *)bp;
+//         }
+// 
+//         /* Carve off a new pool. */
+//         assert(usable_arenas->nfreepools > 0);
+//         assert(usable_arenas->freepools == NULL);
+//         pool = (poolp)usable_arenas->pool_address;
+//         assert((block*)pool <= (block*)usable_arenas->address +
+//                                ARENA_SIZE - POOL_SIZE);
+//         pool->arenaindex = (uint)(usable_arenas - arenas);
+//         assert(&arenas[pool->arenaindex] == usable_arenas);
+//         pool->szidx = DUMMY_SIZE_IDX;
+//         usable_arenas->pool_address += POOL_SIZE;
+//         --usable_arenas->nfreepools;
+// 
+//         if (usable_arenas->nfreepools == 0) {
+//             assert(usable_arenas->nextarena == NULL ||
+//                    usable_arenas->nextarena->prevarena ==
+//                    usable_arenas);
+//             /* Unlink the arena:  it is completely allocated. */
+//             usable_arenas = usable_arenas->nextarena;
+//             if (usable_arenas != NULL) {
+//                 usable_arenas->prevarena = NULL;
+//                 assert(usable_arenas->address != 0);
+//             }
+//         }
+// 
+//         arena_unlock();
+//         goto init_pool;
+//     }
+// 
+//     /* The small block allocator ends here. */
+// 
+// redirect:
+//     /* Redirect the original request to the underlying (libc) allocator.
+//      * We jump here on bigger requests, on error in the code above (as a
+//      * last chance to serve the request) or when the max memory limit
+//      * has been reached.
+//      */
+//     {
+//         void *result;
+//         if (use_calloc)
+//             result = PyMem_RawCalloc(nelem, elsize);
+//         else
+//             result = PyMem_RawMalloc(nbytes);
+//         if (!result)
+//             ATOMIC_DEC(&_Py_AllocatedBlocks);
+//         return result;
+//     }
 }
 
 static void *
@@ -1431,229 +1436,230 @@ ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS
 static void
 _PyObject_Free(void *ctx, void *p)
 {
-    poolp pool;
-    block *lastfree;
-    poolp next, prev;
-    uint class;
-#ifndef Py_USING_MEMORY_DEBUGGER
-    uint arenaindex_temp;
-#endif
-
-    if (p == NULL)      /* free(NULL) has no effect */
-        return;
-
-    ATOMIC_DEC(&_Py_AllocatedBlocks);
-
-#ifdef WITH_VALGRIND
-    if (UNLIKELY(running_on_valgrind > 0))
-        goto redirect;
-#endif
-
-    pool = POOL_ADDR(p);
-    class = pool->szidx;
-    if (Py_ADDRESS_IN_RANGE(p, pool)) {
-        /* We allocated this address. */
-        LOCK(class);
-        /* Link p to the start of the pool's freeblock list.  Since
-         * the pool had at least the p block outstanding, the pool
-         * wasn't empty (so it's already in a usedpools[] list, or
-         * was full and is in no list -- it's not in the freeblocks
-         * list in any case).
-         */
-        assert(pool->ref.count > 0);            /* else it was empty */
-        *(block **)p = lastfree = pool->freeblock;
-        pool->freeblock = (block *)p;
-        if (lastfree) {
-            struct arena_object* ao;
-            uint nf;  /* ao->nfreepools */
-
-            /* freeblock wasn't NULL, so the pool wasn't full,
-             * and the pool is in a usedpools[] list.
-             */
-            if (--pool->ref.count != 0) {
-                /* pool isn't empty:  leave it in usedpools */
-                UNLOCK(class);
-                return;
-            }
-            /* Pool is now empty:  unlink from usedpools, and
-             * link to the front of freepools.  This ensures that
-             * previously freed pools will be allocated later
-             * (being not referenced, they are perhaps paged out).
-             */
-            next = pool->nextpool;
-            prev = pool->prevpool;
-            next->prevpool = prev;
-            prev->nextpool = next;
-
-            /* Link the pool to freepools.  This is a singly-linked
-             * list, and pool->prevpool isn't used there.
-             */
-            arena_lock();
-            ao = &arenas[pool->arenaindex];
-            pool->nextpool = ao->freepools;
-            ao->freepools = pool;
-            nf = ++ao->nfreepools;
-
-            /* All the rest is arena management.  We just freed
-             * a pool, and there are 4 cases for arena mgmt:
-             * 1. If all the pools are free, return the arena to
-             *    the system free().
-             * 2. If this is the only free pool in the arena,
-             *    add the arena back to the `usable_arenas` list.
-             * 3. If the "next" arena has a smaller count of free
-             *    pools, we have to "slide this arena right" to
-             *    restore that usable_arenas is sorted in order of
-             *    nfreepools.
-             * 4. Else there's nothing more to do.
-             */
-            if (nf == ao->ntotalpools) {
-                /* Case 1.  First unlink ao from usable_arenas.
-                 */
-                assert(ao->prevarena == NULL ||
-                       ao->prevarena->address != 0);
-                assert(ao ->nextarena == NULL ||
-                       ao->nextarena->address != 0);
-
-                /* Fix the pointer in the prevarena, or the
-                 * usable_arenas pointer.
-                 */
-                if (ao->prevarena == NULL) {
-                    usable_arenas = ao->nextarena;
-                    assert(usable_arenas == NULL ||
-                           usable_arenas->address != 0);
-                }
-                else {
-                    assert(ao->prevarena->nextarena == ao);
-                    ao->prevarena->nextarena =
-                        ao->nextarena;
-                }
-                /* Fix the pointer in the nextarena. */
-                if (ao->nextarena != NULL) {
-                    assert(ao->nextarena->prevarena == ao);
-                    ao->nextarena->prevarena =
-                        ao->prevarena;
-                }
-                /* Record that this arena_object slot is
-                 * available to be reused.
-                 */
-                ao->nextarena = unused_arena_objects;
-                unused_arena_objects = ao;
-
-                /* Free the entire arena. */
-                _PyObject_Arena.free(_PyObject_Arena.ctx,
-                                     (void *)ao->address, ARENA_SIZE);
-                ao->address = 0;                        /* mark unassociated */
-                --narenas_currently_allocated;
-
-                arena_unlock();
-                UNLOCK(class);
-                return;
-            }
-            if (nf == 1) {
-                /* Case 2.  Put ao at the head of
-                 * usable_arenas.  Note that because
-                 * ao->nfreepools was 0 before, ao isn't
-                 * currently on the usable_arenas list.
-                 */
-                ao->nextarena = usable_arenas;
-                ao->prevarena = NULL;
-                if (usable_arenas)
-                    usable_arenas->prevarena = ao;
-                usable_arenas = ao;
-                assert(usable_arenas->address != 0);
-
-                arena_unlock();
-                UNLOCK(class);
-                return;
-            }
-            /* If this arena is now out of order, we need to keep
-             * the list sorted.  The list is kept sorted so that
-             * the "most full" arenas are used first, which allows
-             * the nearly empty arenas to be completely freed.  In
-             * a few un-scientific tests, it seems like this
-             * approach allowed a lot more memory to be freed.
-             */
-            if (ao->nextarena == NULL ||
-                         nf <= ao->nextarena->nfreepools) {
-                /* Case 4.  Nothing to do. */
-                arena_unlock();
-                UNLOCK(class);
-                return;
-            }
-            /* Case 3:  We have to move the arena towards the end
-             * of the list, because it has more free pools than
-             * the arena to its right.
-             * First unlink ao from usable_arenas.
-             */
-            if (ao->prevarena != NULL) {
-                /* ao isn't at the head of the list */
-                assert(ao->prevarena->nextarena == ao);
-                ao->prevarena->nextarena = ao->nextarena;
-            }
-            else {
-                /* ao is at the head of the list */
-                assert(usable_arenas == ao);
-                usable_arenas = ao->nextarena;
-            }
-            ao->nextarena->prevarena = ao->prevarena;
-
-            /* Locate the new insertion point by iterating over
-             * the list, using our nextarena pointer.
-             */
-            while (ao->nextarena != NULL &&
-                            nf > ao->nextarena->nfreepools) {
-                ao->prevarena = ao->nextarena;
-                ao->nextarena = ao->nextarena->nextarena;
-            }
-
-            /* Insert ao at this point. */
-            assert(ao->nextarena == NULL ||
-                ao->prevarena == ao->nextarena->prevarena);
-            assert(ao->prevarena->nextarena == ao->nextarena);
-
-            ao->prevarena->nextarena = ao;
-            if (ao->nextarena != NULL)
-                ao->nextarena->prevarena = ao;
-
-            /* Verify that the swaps worked. */
-            assert(ao->nextarena == NULL ||
-                      nf <= ao->nextarena->nfreepools);
-            assert(ao->prevarena == NULL ||
-                      nf > ao->prevarena->nfreepools);
-            assert(ao->nextarena == NULL ||
-                ao->nextarena->prevarena == ao);
-            assert((usable_arenas == ao &&
-                ao->prevarena == NULL) ||
-                ao->prevarena->nextarena == ao);
-
-            arena_unlock();
-            UNLOCK(class);
-            return;
-        }
-        /* Pool was full, so doesn't currently live in any list:
-         * link it to the front of the appropriate usedpools[] list.
-         * This mimics LRU pool usage for new allocations and
-         * targets optimal filling when several pools contain
-         * blocks of the same size class.
-         */
-        --pool->ref.count;
-        assert(pool->ref.count > 0);            /* else the pool is empty */
-        next = usedpools[class + class];
-        prev = next->prevpool;
-        /* insert pool before next:   prev <-> pool <-> next */
-        pool->nextpool = next;
-        pool->prevpool = prev;
-        next->prevpool = pool;
-        prev->nextpool = pool;
-        UNLOCK(class);
-        return;
-    }
-
-#ifdef WITH_VALGRIND
-redirect:
-#endif
-    /* We didn't allocate this address. */
-    PyMem_RawFree(p);
+	free(p);
+//     poolp pool;
+//     block *lastfree;
+//     poolp next, prev;
+//     uint class;
+// #ifndef Py_USING_MEMORY_DEBUGGER
+//     uint arenaindex_temp;
+// #endif
+// 
+//     if (p == NULL)      /* free(NULL) has no effect */
+//         return;
+// 
+//     ATOMIC_DEC(&_Py_AllocatedBlocks);
+// 
+// #ifdef WITH_VALGRIND
+//     if (UNLIKELY(running_on_valgrind > 0))
+//         goto redirect;
+// #endif
+// 
+//     pool = POOL_ADDR(p);
+//     class = pool->szidx;
+//     if (Py_ADDRESS_IN_RANGE(p, pool)) {
+//         /* We allocated this address. */
+//         LOCK(class);
+//         /* Link p to the start of the pool's freeblock list.  Since
+//          * the pool had at least the p block outstanding, the pool
+//          * wasn't empty (so it's already in a usedpools[] list, or
+//          * was full and is in no list -- it's not in the freeblocks
+//          * list in any case).
+//          */
+//         assert(pool->ref.count > 0);            /* else it was empty */
+//         *(block **)p = lastfree = pool->freeblock;
+//         pool->freeblock = (block *)p;
+//         if (lastfree) {
+//             struct arena_object* ao;
+//             uint nf;  /* ao->nfreepools */
+// 
+//             /* freeblock wasn't NULL, so the pool wasn't full,
+//              * and the pool is in a usedpools[] list.
+//              */
+//             if (--pool->ref.count != 0) {
+//                 /* pool isn't empty:  leave it in usedpools */
+//                 UNLOCK(class);
+//                 return;
+//             }
+//             /* Pool is now empty:  unlink from usedpools, and
+//              * link to the front of freepools.  This ensures that
+//              * previously freed pools will be allocated later
+//              * (being not referenced, they are perhaps paged out).
+//              */
+//             next = pool->nextpool;
+//             prev = pool->prevpool;
+//             next->prevpool = prev;
+//             prev->nextpool = next;
+// 
+//             /* Link the pool to freepools.  This is a singly-linked
+//              * list, and pool->prevpool isn't used there.
+//              */
+//             arena_lock();
+//             ao = &arenas[pool->arenaindex];
+//             pool->nextpool = ao->freepools;
+//             ao->freepools = pool;
+//             nf = ++ao->nfreepools;
+// 
+//             /* All the rest is arena management.  We just freed
+//              * a pool, and there are 4 cases for arena mgmt:
+//              * 1. If all the pools are free, return the arena to
+//              *    the system free().
+//              * 2. If this is the only free pool in the arena,
+//              *    add the arena back to the `usable_arenas` list.
+//              * 3. If the "next" arena has a smaller count of free
+//              *    pools, we have to "slide this arena right" to
+//              *    restore that usable_arenas is sorted in order of
+//              *    nfreepools.
+//              * 4. Else there's nothing more to do.
+//              */
+//             if (nf == ao->ntotalpools) {
+//                 /* Case 1.  First unlink ao from usable_arenas.
+//                  */
+//                 assert(ao->prevarena == NULL ||
+//                        ao->prevarena->address != 0);
+//                 assert(ao ->nextarena == NULL ||
+//                        ao->nextarena->address != 0);
+// 
+//                 /* Fix the pointer in the prevarena, or the
+//                  * usable_arenas pointer.
+//                  */
+//                 if (ao->prevarena == NULL) {
+//                     usable_arenas = ao->nextarena;
+//                     assert(usable_arenas == NULL ||
+//                            usable_arenas->address != 0);
+//                 }
+//                 else {
+//                     assert(ao->prevarena->nextarena == ao);
+//                     ao->prevarena->nextarena =
+//                         ao->nextarena;
+//                 }
+//                 /* Fix the pointer in the nextarena. */
+//                 if (ao->nextarena != NULL) {
+//                     assert(ao->nextarena->prevarena == ao);
+//                     ao->nextarena->prevarena =
+//                         ao->prevarena;
+//                 }
+//                 /* Record that this arena_object slot is
+//                  * available to be reused.
+//                  */
+//                 ao->nextarena = unused_arena_objects;
+//                 unused_arena_objects = ao;
+// 
+//                 /* Free the entire arena. */
+//                 _PyObject_Arena.free(_PyObject_Arena.ctx,
+//                                      (void *)ao->address, ARENA_SIZE);
+//                 ao->address = 0;                        /* mark unassociated */
+//                 --narenas_currently_allocated;
+// 
+//                 arena_unlock();
+//                 UNLOCK(class);
+//                 return;
+//             }
+//             if (nf == 1) {
+//                 /* Case 2.  Put ao at the head of
+//                  * usable_arenas.  Note that because
+//                  * ao->nfreepools was 0 before, ao isn't
+//                  * currently on the usable_arenas list.
+//                  */
+//                 ao->nextarena = usable_arenas;
+//                 ao->prevarena = NULL;
+//                 if (usable_arenas)
+//                     usable_arenas->prevarena = ao;
+//                 usable_arenas = ao;
+//                 assert(usable_arenas->address != 0);
+// 
+//                 arena_unlock();
+//                 UNLOCK(class);
+//                 return;
+//             }
+//             /* If this arena is now out of order, we need to keep
+//              * the list sorted.  The list is kept sorted so that
+//              * the "most full" arenas are used first, which allows
+//              * the nearly empty arenas to be completely freed.  In
+//              * a few un-scientific tests, it seems like this
+//              * approach allowed a lot more memory to be freed.
+//              */
+//             if (ao->nextarena == NULL ||
+//                          nf <= ao->nextarena->nfreepools) {
+//                 /* Case 4.  Nothing to do. */
+//                 arena_unlock();
+//                 UNLOCK(class);
+//                 return;
+//             }
+//             /* Case 3:  We have to move the arena towards the end
+//              * of the list, because it has more free pools than
+//              * the arena to its right.
+//              * First unlink ao from usable_arenas.
+//              */
+//             if (ao->prevarena != NULL) {
+//                 /* ao isn't at the head of the list */
+//                 assert(ao->prevarena->nextarena == ao);
+//                 ao->prevarena->nextarena = ao->nextarena;
+//             }
+//             else {
+//                 /* ao is at the head of the list */
+//                 assert(usable_arenas == ao);
+//                 usable_arenas = ao->nextarena;
+//             }
+//             ao->nextarena->prevarena = ao->prevarena;
+// 
+//             /* Locate the new insertion point by iterating over
+//              * the list, using our nextarena pointer.
+//              */
+//             while (ao->nextarena != NULL &&
+//                             nf > ao->nextarena->nfreepools) {
+//                 ao->prevarena = ao->nextarena;
+//                 ao->nextarena = ao->nextarena->nextarena;
+//             }
+// 
+//             /* Insert ao at this point. */
+//             assert(ao->nextarena == NULL ||
+//                 ao->prevarena == ao->nextarena->prevarena);
+//             assert(ao->prevarena->nextarena == ao->nextarena);
+// 
+//             ao->prevarena->nextarena = ao;
+//             if (ao->nextarena != NULL)
+//                 ao->nextarena->prevarena = ao;
+// 
+//             /* Verify that the swaps worked. */
+//             assert(ao->nextarena == NULL ||
+//                       nf <= ao->nextarena->nfreepools);
+//             assert(ao->prevarena == NULL ||
+//                       nf > ao->prevarena->nfreepools);
+//             assert(ao->nextarena == NULL ||
+//                 ao->nextarena->prevarena == ao);
+//             assert((usable_arenas == ao &&
+//                 ao->prevarena == NULL) ||
+//                 ao->prevarena->nextarena == ao);
+// 
+//             arena_unlock();
+//             UNLOCK(class);
+//             return;
+//         }
+//         /* Pool was full, so doesn't currently live in any list:
+//          * link it to the front of the appropriate usedpools[] list.
+//          * This mimics LRU pool usage for new allocations and
+//          * targets optimal filling when several pools contain
+//          * blocks of the same size class.
+//          */
+//         --pool->ref.count;
+//         assert(pool->ref.count > 0);            /* else the pool is empty */
+//         next = usedpools[class + class];
+//         prev = next->prevpool;
+//         /* insert pool before next:   prev <-> pool <-> next */
+//         pool->nextpool = next;
+//         pool->prevpool = prev;
+//         next->prevpool = pool;
+//         prev->nextpool = pool;
+//         UNLOCK(class);
+//         return;
+//     }
+// 
+// #ifdef WITH_VALGRIND
+// redirect:
+// #endif
+//     /* We didn't allocate this address. */
+//     PyMem_RawFree(p);
 }
 
 /* realloc.  If p is NULL, this acts like malloc(nbytes).  Else if nbytes==0,
@@ -1665,72 +1671,73 @@ ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS
 static void *
 _PyObject_Realloc(void *ctx, void *p, size_t nbytes)
 {
-    void *bp;
-    poolp pool;
-    size_t size;
-#ifndef Py_USING_MEMORY_DEBUGGER
-    uint arenaindex_temp;
-#endif
-
-    if (p == NULL)
-        return _PyObject_Alloc(0, ctx, 1, nbytes);
-
-#ifdef WITH_VALGRIND
-    /* Treat running_on_valgrind == -1 the same as 0 */
-    if (UNLIKELY(running_on_valgrind > 0))
-        goto redirect;
-#endif
-
-    pool = POOL_ADDR(p);
-    if (Py_ADDRESS_IN_RANGE(p, pool)) {
-        /* We're in charge of this block */
-        size = INDEX2SIZE(pool->szidx);
-        if (nbytes <= size) {
-            /* The block is staying the same or shrinking.  If
-             * it's shrinking, there's a tradeoff:  it costs
-             * cycles to copy the block to a smaller size class,
-             * but it wastes memory not to copy it.  The
-             * compromise here is to copy on shrink only if at
-             * least 25% of size can be shaved off.
-             */
-            if (4 * nbytes > 3 * size) {
-                /* It's the same,
-                 * or shrinking and new/old > 3/4.
-                 */
-                return p;
-            }
-            size = nbytes;
-        }
-        bp = _PyObject_Alloc(0, ctx, 1, nbytes);
-        if (bp != NULL) {
-            memcpy(bp, p, size);
-            _PyObject_Free(ctx, p);
-        }
-        return bp;
-    }
-#ifdef WITH_VALGRIND
- redirect:
-#endif
-    /* We're not managing this block.  If nbytes <=
-     * SMALL_REQUEST_THRESHOLD, it's tempting to try to take over this
-     * block.  However, if we do, we need to copy the valid data from
-     * the C-managed block to one of our blocks, and there's no portable
-     * way to know how much of the memory space starting at p is valid.
-     * As bug 1185883 pointed out the hard way, it's possible that the
-     * C-managed block is "at the end" of allocated VM space, so that
-     * a memory fault can occur if we try to copy nbytes bytes starting
-     * at p.  Instead we punt:  let C continue to manage this block.
-     */
-    if (nbytes)
-        return PyMem_RawRealloc(p, nbytes);
-    /* C doesn't define the result of realloc(p, 0) (it may or may not
-     * return NULL then), but Python's docs promise that nbytes==0 never
-     * returns NULL.  We don't pass 0 to realloc(), to avoid that endcase
-     * to begin with.  Even then, we can't be sure that realloc() won't
-     * return NULL.
-     */
-    bp = PyMem_RawRealloc(p, 1);
-    return bp ? bp : p;
+	return realloc(p, nbytes);
+//     void *bp;
+//     poolp pool;
+//     size_t size;
+// #ifndef Py_USING_MEMORY_DEBUGGER
+//     uint arenaindex_temp;
+// #endif
+// 
+//     if (p == NULL)
+//         return _PyObject_Alloc(0, ctx, 1, nbytes);
+// 
+// #ifdef WITH_VALGRIND
+//     /* Treat running_on_valgrind == -1 the same as 0 */
+//     if (UNLIKELY(running_on_valgrind > 0))
+//         goto redirect;
+// #endif
+// 
+//     pool = POOL_ADDR(p);
+//     if (Py_ADDRESS_IN_RANGE(p, pool)) {
+//         /* We're in charge of this block */
+//         size = INDEX2SIZE(pool->szidx);
+//         if (nbytes <= size) {
+//             /* The block is staying the same or shrinking.  If
+//              * it's shrinking, there's a tradeoff:  it costs
+//              * cycles to copy the block to a smaller size class,
+//              * but it wastes memory not to copy it.  The
+//              * compromise here is to copy on shrink only if at
+//              * least 25% of size can be shaved off.
+//              */
+//             if (4 * nbytes > 3 * size) {
+//                 /* It's the same,
+//                  * or shrinking and new/old > 3/4.
+//                  */
+//                 return p;
+//             }
+//             size = nbytes;
+//         }
+//         bp = _PyObject_Alloc(0, ctx, 1, nbytes);
+//         if (bp != NULL) {
+//             memcpy(bp, p, size);
+//             _PyObject_Free(ctx, p);
+//         }
+//         return bp;
+//     }
+// #ifdef WITH_VALGRIND
+//  redirect:
+// #endif
+//     /* We're not managing this block.  If nbytes <=
+//      * SMALL_REQUEST_THRESHOLD, it's tempting to try to take over this
+//      * block.  However, if we do, we need to copy the valid data from
+//      * the C-managed block to one of our blocks, and there's no portable
+//      * way to know how much of the memory space starting at p is valid.
+//      * As bug 1185883 pointed out the hard way, it's possible that the
+//      * C-managed block is "at the end" of allocated VM space, so that
+//      * a memory fault can occur if we try to copy nbytes bytes starting
+//      * at p.  Instead we punt:  let C continue to manage this block.
+//      */
+//     if (nbytes)
+//         return PyMem_RawRealloc(p, nbytes);
+//     /* C doesn't define the result of realloc(p, 0) (it may or may not
+//      * return NULL then), but Python's docs promise that nbytes==0 never
+//      * returns NULL.  We don't pass 0 to realloc(), to avoid that endcase
+//      * to begin with.  Even then, we can't be sure that realloc() won't
+//      * return NULL.
+//      */
+//     bp = PyMem_RawRealloc(p, 1);
+//     return bp ? bp : p;
 }
 
 #else   /* ! WITH_PYMALLOC */
